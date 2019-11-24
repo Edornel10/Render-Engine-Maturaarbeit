@@ -1,0 +1,229 @@
+﻿#pragma kernel CSMain
+
+static const float PI = 3.14259265f;
+
+RWTexture2D<float4> Result;
+
+Texture2D<float4> _SkyboxTexture;
+
+SamplerState sampler_SkyboxTexture;
+
+float4x4 _CameraToWorld;
+float4x4 _CameraInverseProjection;
+
+struct Ray
+{
+	float3 origin;
+	float3 direction;
+};
+
+struct RayHit
+{
+	float3 position;
+	float distance;
+	float3 normal;
+};
+
+
+void IntersectGroundPlane(Ray ray, inout RayHit bestHit, int dimension = 1)
+{
+	// Calculate distance along te ray where the ground plane is intersected
+	float t = 0;
+	if (dimension == 0) 
+	{
+		t = -ray.origin.x / ray.direction.x;
+	}
+	else if (dimension == 1) 
+	{
+		t = -ray.origin.y / ray.direction.y;
+	}
+	else 
+	{
+		t = -ray.origin.z / ray.direction.z;
+	}
+	
+	if (t > 0 && t < bestHit.distance)
+	{
+		bestHit.distance = t;
+		bestHit.position = ray.origin + t * ray.direction;
+		bestHit.normal = float3(0.0f, 1.0f, 0.0f);
+	}
+}
+
+void IntersectGroundCircle(Ray ray, inout RayHit bestHit, float4 plane, int dimension = 1) // eigene Funktion
+{
+	float t = 0;
+	float xyzDist = 0;
+	if (dimension == 0)
+	{
+		t = (-ray.origin.x + plane.x) / ray.direction.x;
+		float3 hitPosition = ray.origin + t * ray.direction;
+		xyzDist = sqrt((hitPosition.y - plane.y) * (hitPosition.y - plane.y) + (hitPosition.z - plane.z) * (hitPosition.z - plane.z));
+	}
+	else if (dimension == 1)
+	{
+		t = (-ray.origin.y + plane.y) / ray.direction.y;
+		float3 hitPosition = ray.origin + t * ray.direction;
+		xyzDist = sqrt((hitPosition.x - plane.x) * (hitPosition.x - plane.x) + (hitPosition.z - plane.z) * (hitPosition.z - plane.z));
+	}
+	else
+	{
+		t = (-ray.origin.z + plane.z) / ray.direction.z;
+		float3 hitPosition = ray.origin + t * ray.direction;
+		xyzDist = sqrt((hitPosition.x - plane.x) * (hitPosition.x - plane.x) + (hitPosition.y - plane.y) * (hitPosition.y - plane.y));
+	}
+	
+	if (t > 0 && t < bestHit.distance && xyzDist < 10)
+	{
+		bestHit.distance = t;
+		bestHit.position = ray.origin + t * ray.direction;
+		bestHit.normal = float3(0.0f, 1.0f, 0.0f);
+	}
+}
+
+void IntersectGroundRectangle(Ray ray, inout RayHit bestHit, float4 plane, int dimension = 1) // eigene Funktion
+{
+	float t = 0;
+	float3 hitPosition;
+	if (dimension == 0)
+	{
+		t = (-ray.origin.x + plane.x) / ray.direction.x;
+
+		hitPosition = ray.origin + t * ray.direction;
+		if (t > 0 && t < bestHit.distance && (hitPosition.y - plane.y) < 10 && (hitPosition.z - plane.z) < 10 && (hitPosition.y - plane.y) > -10 && (hitPosition.z - plane.z) > -10)
+		{
+			bestHit.distance = t;
+			bestHit.position = ray.origin + t * ray.direction;
+			bestHit.normal = float3(1.0f, 0.0f, 0.0f);
+		}
+	}
+	else if (dimension == 1)
+	{
+		t = (-ray.origin.y + plane.y) / ray.direction.y;
+
+		hitPosition = ray.origin + t * ray.direction;
+		if (t > 0 && t < bestHit.distance && (hitPosition.x - plane.x) < 10 && (hitPosition.z - plane.z) < 10 && (hitPosition.x - plane.x) > -10 && (hitPosition.z - plane.z) > -10)
+		{
+			bestHit.distance = t;
+			bestHit.position = ray.origin + t * ray.direction;
+			bestHit.normal = float3(0.0f, 1.0f, 0.0f);
+		}
+	}
+	else
+	{
+		t = (-ray.origin.z + plane.z) / ray.direction.z;
+
+		hitPosition = ray.origin + t * ray.direction;
+		if (t > 0 && t < bestHit.distance && (hitPosition.x - plane.x) < 10 && (hitPosition.y - plane.y) < 10 && (hitPosition.x - plane.x) > -10 && (hitPosition.y - plane.y) > -10)
+		{
+			bestHit.distance = t;
+			bestHit.position = ray.origin + t * ray.direction;
+			bestHit.normal = float3(0.0f, 0.0f, 1.0f);
+		}
+	}
+	
+}
+
+void IntersectSphere(Ray ray, inout RayHit bestHit, float4 sphere)
+{
+	// Calculate distance along the ray where the sphere is intersected
+	float3 d = ray.origin - sphere.xyz;
+	float p1 = -dot(ray.direction, d);
+	float p2sqr = p1 * p1 - dot(d, d) + sphere.w * sphere.w;
+	if (p2sqr < 0)
+		return;
+	float p2 = sqrt(p2sqr);
+	float t = p1 - p2 > 0 ? p1 - p2 : p1 + p2;
+	if (t > 0 && t < bestHit.distance)
+	{
+		bestHit.distance = t;
+		bestHit.position = ray.origin + t * ray.direction;
+		bestHit.normal = normalize(bestHit.position - sphere.xyz);
+	}
+}
+
+void IntersectCube(Ray ray, inout RayHit bestHit, float4 cube)
+{
+
+}
+
+float3 Shade(inout Ray ray, RayHit hit)
+{
+	if (hit.distance < 1.#INF)
+	{
+		// Return the normal
+		return hit.normal * 0.5f + 0.5f;
+	}
+	else
+	{
+		// Sample the skybox and write it
+		float theta = acos(ray.direction.y) / -PI;
+		float phi = atan2(ray.direction.x, -ray.direction.z) / -PI * 0.5f;
+		return  _SkyboxTexture.SampleLevel(sampler_SkyboxTexture, float2(phi, theta), 0).xyz;
+	}
+}
+
+RayHit CreateRayHit()
+{
+	RayHit hit;
+	hit.position = float3(0.0f, 0.0f, 0.0f);
+	hit.distance = 1.#INF;
+	hit.normal = float3(0.0f, 0.0f, 0.0f);
+	return hit;
+}
+
+Ray CreateRay(float3 origin, float3 direction)
+{
+	Ray ray;
+	ray.origin = origin;
+	ray.direction = direction;
+	return ray;
+}
+
+Ray CreateCameraRay(float2 uv)
+{
+	// Transform the camera origin to world space
+	float3 origin = mul(_CameraToWorld, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
+
+	// Invert the perspective projection of the view-space position // recover view space position in perspective projection and invert it // moves the z point
+	float3 direction = mul(_CameraInverseProjection, float4(uv, 0.0f, 1.0f)).xyz; // ohne Projektion würden die strahlen in einem kreis ausgestrahlt werden
+	//float3 direction = mul(0.5, float4(uv, 0.0f, 1.0f)).xyz;
+
+	// Transform the direction from camera to world space and normalize // so that you can look around and the rays not only point in one direction
+	direction = mul(_CameraToWorld, float4(direction, 0.0f)).xyz;
+	direction = normalize(direction);
+	return CreateRay(origin, direction);
+}
+
+RayHit Trace(Ray ray)
+{
+	RayHit bestHit = CreateRayHit();
+	// IntersectGroundPlane(ray, bestHit, 0);
+	IntersectGroundCircle(ray, bestHit, float4(0, 10.0f, 10.0f, 1.0f), 1);
+	IntersectGroundRectangle(ray, bestHit, float4(0, 5.0f, 5.0f, 1.0f), 2);
+	IntersectSphere(ray, bestHit, float4(5, 3.0f, 0, 1.0f));
+
+	return bestHit;
+}
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+	// Get the dimensions of the RenderTexture
+	uint width, height;
+	Result.GetDimensions(width, height);
+
+	// Transform pixel to [-1,1] range
+	float2 uv = float2((id.xy + float2(0.5f, 0.5f)) / float2(width, height) * 2.0f - 1.0f);
+	uv *= 1; // Play with the area of sight.
+	// Get a ray for the UVs
+	Ray ray = CreateCameraRay(uv);
+
+	// Sample the skybox and Objects and write it
+	RayHit hit = Trace(ray);
+	float3 result = Shade(ray, hit);
+	Result[id.xy] = float4(result, 1);
+
+	// Write some colors
+	// Result[id.xy] = float4(ray.direction * 0.5f + 0.5f, 1.0f);
+}
